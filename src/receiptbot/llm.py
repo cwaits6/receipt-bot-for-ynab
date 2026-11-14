@@ -111,6 +111,11 @@ def reading_to_receipt(reading: ReceiptReading) -> ParsedReceipt | None:
     """Turn the model's transcription into a ParsedReceipt using code only.
     Returns None when a required field is missing or an amount is not an amount."""
     if not reading.is_receipt or not reading.merchant or reading.grand_total is None:
+        log.info(
+            "Model reading unusable: merchant=%s grand_total=%s",
+            bool(reading.merchant),
+            reading.grand_total is not None,
+        )
         return None
     try:
         items = [
@@ -127,8 +132,10 @@ def reading_to_receipt(reading: ReceiptReading) -> ParsedReceipt | None:
         ]
         grand_total = parse_money(reading.grand_total)
     except ValueError:
+        log.info("Model reading unusable: an amount was not a plain number")
         return None
     if not items:
+        log.info("Model reading unusable: no line items")
         return None
     order_date = None
     if reading.order_date:

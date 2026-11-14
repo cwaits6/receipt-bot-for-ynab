@@ -118,6 +118,8 @@ class SignalClient:
         *,
         quote_timestamp: int | None = None,
         quote_author: str | None = None,
+        quote_text: str = "",
+        quote_attachments: tuple[str, ...] = (),
     ) -> int:
         """Send a group message, optionally quoting one. Returns its timestamp,
         which is how replies to it are recognized later."""
@@ -125,6 +127,15 @@ class SignalClient:
         if quote_timestamp and quote_author:
             params["quoteTimestamp"] = quote_timestamp
             params["quoteAuthor"] = quote_author
+            # A quote must carry the original's text or attachment types. Signal
+            # apps discard a message whose quote has neither, which is what a
+            # quote of an attachment-only message would otherwise be.
+            if quote_text:
+                params["quoteMessage"] = quote_text[:200]
+            if quote_attachments:
+                params["quoteAttachments"] = list(quote_attachments)
+            if not quote_text and not quote_attachments:
+                del params["quoteTimestamp"], params["quoteAuthor"]
         result = self._rpc("send", params)
         return int(result["timestamp"])
 

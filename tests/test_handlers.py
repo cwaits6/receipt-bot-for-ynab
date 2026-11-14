@@ -16,15 +16,17 @@ DOG_FOOD = "Good Boy Kibble Adult Dry Dog Food, Chicken & Rice Formula, 30 lb. B
 class FakeTransport:
     def __init__(self):
         self.sent = []  # (text, quote_timestamp)
+        self.quotes = []
         self.reactions = []
         self.files = {}
         self.fetched = []
         self._clock = 9000
 
-    def send(self, group_id, text, *, quote_timestamp=None, quote_author=None):
+    def send(self, group_id, text, *, quote_timestamp=None, quote_author=None, **quote):
         assert group_id == GROUP
         self._clock += 1
         self.sent.append((text, quote_timestamp))
+        self.quotes.append(quote)
         return self._clock
 
     def react(self, group_id, emoji, *, author, timestamp):
@@ -211,3 +213,10 @@ def test_bot_never_reacts_to_its_own_messages_on_a_linked_account():
     echo = replace(message(fixture_text("amazon_single.txt")), timestamp=transport.last_timestamp)
     bot.handle(echo)
     assert len(transport.sent) == 1 and transport.reactions == []
+
+
+def test_reply_to_attachment_only_message_carries_the_attachment_type_in_the_quote():
+    bot, transport, _, ledger = make_bot()
+    ledger.upsert_rule(normalize_key(DOG_FOOD), "c-pets", "human")
+    bot.handle(message(attachments=[pdf_attachment(transport)]))
+    assert transport.quotes[-1] == {"quote_text": "", "quote_attachments": ("application/pdf",)}

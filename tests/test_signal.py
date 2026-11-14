@@ -74,7 +74,9 @@ def test_send_with_quote_uses_documented_rpc_shape():
         return httpx.Response(200, json={"jsonrpc": "2.0", "result": {"timestamp": 999}, "id": 1})
 
     client = make_client(handler)
-    stamp = client.send(GROUP, "Logged", quote_timestamp=5, quote_author="+15550100001")
+    stamp = client.send(
+        GROUP, "Logged", quote_timestamp=5, quote_author="+15550100001", quote_text="here"
+    )
     assert stamp == 999
     path, body = seen[0]
     assert path == "/api/v1/rpc"
@@ -84,7 +86,12 @@ def test_send_with_quote_uses_documented_rpc_shape():
         "message": "Logged",
         "quoteTimestamp": 5,
         "quoteAuthor": "+15550100001",
+        "quoteMessage": "here",
     }
+    client.send(GROUP, "x", quote_timestamp=5, quote_author="+1", quote_attachments=("image/png",))
+    assert seen[1][1]["params"]["quoteAttachments"] == ["image/png"]
+    client.send(GROUP, "x", quote_timestamp=5, quote_author="+1")  # nothing to quote with
+    assert "quoteTimestamp" not in seen[2][1]["params"]
 
 
 def test_react_and_fetch_attachment():

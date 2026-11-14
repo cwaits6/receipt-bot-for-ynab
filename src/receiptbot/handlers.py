@@ -36,6 +36,8 @@ class Transport(Protocol):
         *,
         quote_timestamp: int | None = None,
         quote_author: str | None = None,
+        quote_text: str = "",
+        quote_attachments: tuple[str, ...] = (),
     ) -> int: ...
 
     def react(self, group_id: str, emoji: str, *, author: str, timestamp: int) -> None: ...
@@ -75,7 +77,12 @@ class Bot:
     def _reply(self, msg: Incoming, text: str) -> int:
         return self._sent(
             self.transport.send(
-                self.signal.group_id, text, quote_timestamp=msg.timestamp, quote_author=msg.sender
+                self.signal.group_id,
+                text,
+                quote_timestamp=msg.timestamp,
+                quote_author=msg.sender,
+                quote_text=msg.text,
+                quote_attachments=tuple(a.content_type for a in msg.attachments if a.content_type),
             )
         )
 
@@ -83,6 +90,7 @@ class Bot:
         return self._sent(self.transport.send(self.signal.group_id, text))
 
     def _deliver(self, msg: Incoming, outcome: Outcome) -> None:
+        log.info("Message %s: outcome %s", msg.timestamp, outcome.kind)
         timestamp = self._reply(msg, outcome.reply)
         self.pipeline.sent(outcome, timestamp)
 
