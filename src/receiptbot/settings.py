@@ -87,10 +87,16 @@ class Settings(BaseModel):
 
 def load_settings(path: str | Path | None = None) -> Settings:
     path = Path(path or os.environ.get("RECEIPTBOT_CONFIG", "config.yaml"))
-    if not path.exists():
+    if not path.is_file():
         raise ConfigError(f"{path} not found. Copy config.example.yaml and fill it in.")
     raw = yaml.safe_load(path.read_text()) or {}
-    return Settings.model_validate(raw)
+    settings = Settings.model_validate(raw)
+    # rules.yaml and recurring.yaml sit next to config.yaml unless given absolute paths.
+    settings.rules_file = path.parent / settings.rules_file
+    settings.recurring_file = path.parent / settings.recurring_file
+    if os.environ.get("RECEIPTBOT_DATA_DIR"):
+        settings.data_dir = Path(os.environ["RECEIPTBOT_DATA_DIR"])
+    return settings
 
 
 def require_env(name: str) -> str:
