@@ -1,0 +1,18 @@
+# secrets and personal configuration
+.env
+config.yaml
+rules.yaml
+recurring.yaml
+
+# runtime data and real documents (never commit real receipts)
+data/
+samples/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/

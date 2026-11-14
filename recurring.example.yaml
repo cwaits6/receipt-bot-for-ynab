@@ -1,0 +1,7 @@
+# Copy to recurring.yaml (git-ignored). Subscription-style charges that never
+# have a checkout moment. A bank import from the same merchant within
+# reconcile.recurring_tolerance of the price is annotated automatically.
+- description: "cat litter subscription"
+  merchant: "Amazon"
+  price: "23.74"
+  category: Pets
