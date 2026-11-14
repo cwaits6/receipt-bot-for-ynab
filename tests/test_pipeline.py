@@ -309,3 +309,157 @@ def test_oversized_file_is_refused():
     pipeline, _, _, _ = make_pipeline(settings=settings)
     outcome = run(pipeline, Document(kind="pdf", data=b"x" * 11))
     assert outcome.kind == "error" and "too large" in outcome.reply
+
+
+# -- charges that are already in YNAB ---------------------------------------
+
+
+def existing(ynab, id="bank-1", amount=-31990, on="2026-11-04", **over):
+    from datetime import date
+
+    from receiptbot.ynab import Txn
+
+    fields = dict(
+        id=id,
+        date=date.fromisoformat(on),
+        amount=amount,
+        account_id="acct",
+        payee_name="Amazon",
+        import_id=f"YNAB:{amount}:{on}:1",
+        import_payee_name_original="AMAZON MKTPL*AB12C",
+    )
+    return ynab.add(Txn(**(fields | over)))
+
+
+def test_existing_charge_without_memo_is_filled_in_instead_of_adding_another():
+    pipeline, ynab, _, ledger = make_pipeline()
+    teach(ledger, **{DOG_FOOD: "c-pets"})
+    existing(ynab)
+    outcome = run(pipeline, text_doc("amazon_single.txt"))
+    assert ynab.created == []
+    assert ynab.updated == [
+        ("bank-1", {"memo": "adult dry dog food [111-0000000-0000001]", "category_id": "c-pets"})
+    ]
+    assert outcome.reply == (
+        "Updated the existing $31.99 charge from Nov 4 for Alex "
+        "\u00b7 Pets: adult dry dog food $31.99"
+    )
+    order = ledger.get_order(outcome.order_id)
+    assert (order.state, order.ynab_transaction_id) == ("matched", "bank-1")
+    assert run(pipeline, text_doc("amazon_single.txt")).kind == "duplicate"
+
+
+def test_existing_charge_keeps_a_category_someone_already_chose():
+    pipeline, ynab, _, ledger = make_pipeline()
+    teach(ledger, **{DOG_FOOD: "c-pets"})
+    existing(ynab, category_id="c-gifts")
+    outcome = run(pipeline, text_doc("amazon_single.txt"))
+    assert ynab.updated == [("bank-1", {"memo": "adult dry dog food [111-0000000-0000001]"})]
+    assert "kept its category" in outcome.reply
+
+
+def test_existing_charge_with_a_memo_asks_before_changing_anything():
+    pipeline, ynab, _, ledger = make_pipeline()
+    teach(ledger, **{DOG_FOOD: "c-pets"})
+    existing(ynab, memo="kibble for Rex", category_id="c-gifts", approved=True)
+    asked = run(pipeline, text_doc("amazon_single.txt"))
+    assert asked.kind == "question"
+    assert 'already a $31.99 Amazon charge on Nov 4 in YNAB with the memo "kibble for Rex"' in (
+        asked.reply
+    )
+    assert ynab.updated == [] and ynab.created == []
+    pipeline.sent(asked, bot_timestamp=6000)
+
+    unclear = pipeline.answer(ledger.open_question(6000), "hmm")
+    assert unclear.kind == "question" and ynab.updated == []
+    pipeline.sent(unclear, bot_timestamp=6001)
+
+    done = pipeline.answer(ledger.open_question(6001), "Yes")
+    assert done.reply.startswith("Updated the existing $31.99 charge from Nov 4")
+    assert ynab.updated == [
+        ("bank-1", {"memo": "adult dry dog food [111-0000000-0000001]", "category_id": "c-pets"})
+    ]
+    assert ynab.transactions["bank-1"].approved is True  # approval is never changed
+    assert ynab.created == []
+
+
+def test_answering_no_leaves_the_existing_charge_alone_and_adds_nothing():
+    pipeline, ynab, _, ledger = make_pipeline()
+    teach(ledger, **{DOG_FOOD: "c-pets"})
+    existing(ynab, memo="kibble for Rex")
+    asked = run(pipeline, text_doc("amazon_single.txt"))
+    pipeline.sent(asked, bot_timestamp=6000)
+    done = pipeline.answer(ledger.open_question(6000), "no")
+    assert done.kind == "info" and "left it as it is" in done.reply
+    assert ynab.updated == [] and ynab.created == []
+    assert ledger.get_order(done.order_id).state == "matched"
+    assert run(pipeline, text_doc("amazon_single.txt")).kind == "duplicate"
+
+
+def test_multi_category_receipt_turns_the_existing_charge_into_a_split():
+    pipeline, ynab, _, ledger = make_pipeline()
+    teach(ledger, **{DOG_FOOD: "c-pets", TRASH_BAGS: "c-house"})
+    existing(ynab, amount=-57890)
+    outcome = run(pipeline, text_doc("amazon_multi.txt"))
+    [(txn_id, changes)] = ynab.updated
+    assert txn_id == "bank-1"
+    assert [(s["category_id"], s["amount"]) for s in changes["subtransactions"]] == [
+        ("c-pets", -34060),
+        ("c-house", -23830),
+    ]
+    assert [i.ynab_subtransaction_id for i in ledger.items(outcome.order_id)] == [
+        "bank-1-s1",
+        "bank-1-s2",
+    ]
+
+
+def test_charges_that_do_not_match_are_ignored_and_a_new_one_is_added():
+    pipeline, ynab, _, ledger = make_pipeline()
+    teach(ledger, **{DOG_FOOD: "c-pets"})
+    existing(ynab, id="other-amount", amount=-31980)
+    existing(ynab, id="other-payee", payee_name="Grocery", import_payee_name_original="GROCERY")
+    existing(ynab, id="too-old", on="2026-10-20")
+    existing(ynab, id="other-card", account_id="acct-2")
+    existing(ynab, id="deleted", deleted=True)
+    outcome = run(pipeline, text_doc("amazon_single.txt"))
+    assert outcome.reply.startswith("Logged $31.99")
+    assert len(ynab.created) == 1 and ynab.updated == []
+
+
+def test_two_possible_existing_charges_change_nothing():
+    pipeline, ynab, _, ledger = make_pipeline()
+    teach(ledger, **{DOG_FOOD: "c-pets"})
+    existing(ynab, id="a")
+    existing(ynab, id="b", on="2026-11-06")
+    outcome = run(pipeline, text_doc("amazon_single.txt"))
+    assert outcome.kind == "info" and "can't tell which one" in outcome.reply
+    assert ynab.created == [] and ynab.updated == []
+    assert ledger.orders_in_state("needs_attention") == []
+
+
+def test_reconciled_existing_charge_is_left_alone():
+    pipeline, ynab, _, ledger = make_pipeline()
+    teach(ledger, **{DOG_FOOD: "c-pets"})
+    existing(ynab, cleared="reconciled")
+    outcome = run(pipeline, text_doc("amazon_single.txt"))
+    assert outcome.kind == "info" and "reconciled" in outcome.reply
+    assert ynab.created == [] and ynab.updated == []
+
+
+def test_undo_never_deletes_an_existing_charge_the_bot_only_filled_in():
+    pipeline, ynab, _, ledger = make_pipeline()
+    teach(ledger, **{DOG_FOOD: "c-pets"})
+    existing(ynab)
+    outcome = run(pipeline, text_doc("amazon_single.txt"))
+    undone = pipeline.undo(ledger.get_order(outcome.order_id))
+    assert "left it alone" in undone.reply and ynab.deleted == []
+
+
+def test_dry_run_reports_the_existing_charge_without_writing():
+    pipeline, ynab, _, ledger = make_pipeline(settings=make_settings(dry_run=True))
+    teach(ledger, **{DOG_FOOD: "c-pets"})
+    existing(ynab)
+    outcome = run(pipeline, text_doc("amazon_single.txt"))
+    assert outcome.reply.startswith("Updated the existing $31.99 charge")
+    assert outcome.reply.endswith("DRY RUN, nothing written to YNAB")
+    assert ynab.updated == [] and ynab.created == []

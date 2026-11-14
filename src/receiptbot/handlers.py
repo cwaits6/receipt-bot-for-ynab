@@ -160,7 +160,7 @@ class Bot:
         """A reply to one of the bot's messages. Returns False if it was not one."""
         question = self.ledger.open_question(msg.quote_timestamp)
         if question is not None:
-            if question.question_type in ("category", "total"):
+            if question.question_type in ("category", "total", "existing"):
                 if command in _CANCEL:
                     outcome = self.pipeline.cancel(question)
                 else:

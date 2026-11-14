@@ -118,6 +118,15 @@ class FakeYnab:
         self.transactions[transaction_id] = txn
         return txn
 
+    def recent_transactions(self, account_id, since_date):
+        if self.fail_with:
+            raise self.fail_with
+        return [
+            t
+            for t in self.transactions.values()
+            if t.account_id == account_id and t.date >= since_date
+        ]
+
     def account_transactions(self, account_id, *, last_knowledge=None, since_date=None):
         self.delta_calls.append((account_id, last_knowledge))
         self.knowledge += 1

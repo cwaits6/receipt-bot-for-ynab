@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -20,6 +20,7 @@ from receiptbot.llm import LlmError, ReadResult
 from receiptbot.models import Document, ParsedReceipt, canonical_merchant
 from receiptbot.parsers import run_parsers
 from receiptbot.pdftext import PdfError, extract_text
+from receiptbot.reconcile import payee_matches
 from receiptbot.settings import Settings
 from receiptbot.validate import (
     allocate,
@@ -30,7 +31,7 @@ from receiptbot.validate import (
     to_milliunits,
     truncate_words,
 )
-from receiptbot.ynab import MEMO_MAX, PAYEE_MAX, NewTxn, Split, YnabClient, YnabError
+from receiptbot.ynab import MEMO_MAX, PAYEE_MAX, NewTxn, Split, Txn, YnabClient, YnabError
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,21 @@ class Outcome:
     question: dict[str, Any] | None = None
     model_used: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+def _existing_changes(new: NewTxn, target: Txn, overwrite: bool) -> dict[str, Any]:
+    """What to write onto a charge that is already in YNAB. The memo is always
+    written. Categories are written when the person asked to replace the details,
+    or when the charge has none yet; an existing split is never restructured."""
+    changes: dict[str, Any] = {"memo": new.memo}
+    if any(not sub.deleted for sub in target.subtransactions):
+        return changes
+    if overwrite or target.category_id is None:
+        if new.subtransactions:
+            changes["subtransactions"] = [s.model_dump(mode="json") for s in new.subtransactions]
+        else:
+            changes["category_id"] = new.category_id
+    return changes
 
 
 class Pipeline:
@@ -239,7 +255,12 @@ class Pipeline:
 
     # -- posting -----------------------------------------------------------
 
-    def _post(self, order: Order, items: list[OrderItem]) -> Outcome:
+    def _post(
+        self,
+        order: Order,
+        items: list[OrderItem],
+        decision: tuple[str, str] | None = None,
+    ) -> Outcome:
         try:
             amounts = allocate([item.line_total for item in items], order.grand_total)
             to_milliunits(order.grand_total)
@@ -285,31 +306,90 @@ class Pipeline:
         dry_run = self.settings.dry_run
         sub_ids: dict[str, str | None] = {}
         transaction_id = None
-        if not dry_run:
-            try:
-                created = self.ynab.create_transaction(new)
-            except YnabError as exc:
-                log.error("YNAB rejected order %s: %s", order.id, exc)
-                self.ledger.delete_order(order.id)
-                return Outcome(
-                    "error",
-                    f"YNAB didn't accept that one ({exc.detail}). Nothing was logged; "
-                    "please try again later.",
-                )
-            transaction_id = created.id
-            live = [s for s in created.subtransactions if not s.deleted]
-            if len(live) == len(new.subtransactions):
-                sub_ids = {
-                    split.category_id or "": sub.id
-                    for split, sub in zip(new.subtransactions, live, strict=True)
-                }
+        target: Txn | None = None  # an existing charge to fill in instead of adding one
+        overwrite = False
+        try:
+            if decision is not None:
+                action, existing_id = decision
+                target = self.ynab.get_transaction(existing_id)
+                if action == "skip":
+                    return self._link(order, items, amounts, target, "and I left it as it is")
+                overwrite = True
+            else:
+                matches = self._existing_charges(order)
+                if len(matches) > 1:
+                    self.ledger.delete_order(order.id)
+                    total = fmt_money(order.grand_total, order.currency)
+                    return Outcome(
+                        "info",
+                        f"There are already {len(matches)} {order.merchant} charges of {total} "
+                        "in YNAB and I can't tell which one this is, so I didn't add or change "
+                        "anything. Please fill it in by hand.",
+                    )
+                if matches:
+                    target = matches[0]
+                    if target.cleared == "reconciled":
+                        return self._link(
+                            order, items, amounts, target, "and reconciled, so I left it alone"
+                        )
+                    old_memo = (target.memo or "").strip()
+                    if old_memo:
+                        total = fmt_money(order.grand_total, order.currency)
+                        return Outcome(
+                            "question",
+                            f"There is already a {total} {order.merchant} charge on "
+                            f'{target.date:%b %-d} in YNAB with the memo "'
+                            f'{truncate_words(old_memo, 80)}". Reply yes to this message to '
+                            "replace it with this receipt's details, or no to leave it.",
+                            order_id=order.id,
+                            question={
+                                "type": "existing",
+                                "order_id": order.id,
+                                "payload": {"transaction_id": target.id},
+                            },
+                        )
+            if target is not None:
+                changes = _existing_changes(new, target, overwrite)
+                transaction_id = target.id
+                result = target if dry_run else self.ynab.update_transaction(target.id, changes)
+                wrote_splits = "subtransactions" in changes
+            elif not dry_run:
+                result = self.ynab.create_transaction(new)
+                transaction_id = result.id
+                wrote_splits = bool(new.subtransactions)
+            if not dry_run and wrote_splits:
+                live = [s for s in result.subtransactions if not s.deleted]
+                if len(live) == len(new.subtransactions):
+                    sub_ids = {
+                        split.category_id or "": sub.id
+                        for split, sub in zip(new.subtransactions, live, strict=True)
+                    }
+        except YnabError as exc:
+            log.error("YNAB rejected order %s: %s", order.id, exc)
+            self.ledger.delete_order(order.id)
+            return Outcome(
+                "error",
+                f"YNAB didn't accept that one ({exc.detail}). Nothing was logged; "
+                "please try again later.",
+            )
 
         for item, amount in zip(items, amounts, strict=True):
             self.ledger.set_item_posting(item.id, amount, sub_ids.get(item.category_id or ""))
+        # An order that filled in an existing charge is "matched": that transaction
+        # is the real one, so undo must never delete it.
         self.ledger.update_order(
-            order.id, state="logged", ynab_transaction_id=transaction_id, dry_run=dry_run
+            order.id,
+            state="matched" if target is not None and not dry_run else "logged",
+            ynab_transaction_id=None if dry_run else transaction_id,
+            dry_run=dry_run,
         )
-        log.info("Order %s logged as %s (dry_run=%s)", order.id, transaction_id, dry_run)
+        log.info(
+            "Order %s %s %s (dry_run=%s)",
+            order.id,
+            "updated existing" if target is not None else "logged as",
+            transaction_id,
+            dry_run,
+        )
 
         parts_text = []
         for category_id, parts in groups.items():
@@ -317,17 +397,67 @@ class Pipeline:
                 f"{item.description} {fmt_money(amount, order.currency)}" for item, amount in parts
             )
             parts_text.append(f"{self.categorizer.name_of(category_id)}: {lines}")
-        reply = f"Logged {fmt_money(order.grand_total, order.currency)} for {order.sender}"
-        reply = " · ".join([reply, *parts_text])
+        total = fmt_money(order.grand_total, order.currency)
+        if target is None:
+            reply = f"Logged {total} for {order.sender}"
+        else:
+            reply = (
+                f"Updated the existing {total} charge from {target.date:%b %-d} for {order.sender}"
+            )
+            if "category_id" not in changes and "subtransactions" not in changes:
+                parts_text = [f"memo: {new.memo}", "kept its category"]
+        reply = " \u00b7 ".join([reply, *parts_text])
         if order.note:
-            reply += f" · {order.note}"
+            reply += f" \u00b7 {order.note}"
         if order.source == "llm":
-            reply += " · read by AI"
+            reply += " \u00b7 read by AI"
         if any(item.category_source == "llm" for item in items):
-            reply += " · category by AI"
+            reply += " \u00b7 category by AI"
         if dry_run:
-            reply += " · DRY RUN, nothing written to YNAB"
+            reply += " \u00b7 DRY RUN, nothing written to YNAB"
         return Outcome("logged", reply, order_id=order.id, model_used=order.source == "llm")
+
+    def _existing_charges(self, order: Order) -> list[Txn]:
+        """Transactions already in YNAB that look like this order's charge: same
+        account, same merchant, exact amount, dated around the order. The bot's
+        own entries do not count."""
+        own = {o.ynab_transaction_id for o in self.ledger.orders_with_transactions()}
+        since = order.order_date - timedelta(days=1)
+        until = order.order_date + timedelta(days=self.settings.reconcile.window_days)
+        amount = -to_milliunits(order.grand_total)
+        return [
+            txn
+            for txn in self.ynab.recent_transactions(order.account_id, since)
+            if not txn.deleted
+            and txn.id not in own
+            and txn.amount == amount
+            and since <= txn.date <= until
+            and payee_matches(txn, order.merchant)
+        ]
+
+    def _link(
+        self, order: Order, items: list[OrderItem], amounts: list[Decimal], txn: Txn, why: str
+    ) -> Outcome:
+        """Record that this order is an existing YNAB transaction, changing nothing there."""
+        for item, amount in zip(items, amounts, strict=True):
+            self.ledger.set_item_posting(item.id, amount, None)
+        dry_run = self.settings.dry_run
+        self.ledger.update_order(
+            order.id,
+            state="logged" if dry_run else "matched",
+            ynab_transaction_id=None if dry_run else txn.id,
+            dry_run=dry_run,
+        )
+        self.ledger.set(
+            "learned_orders", [*self.ledger.get("learned_orders", []), order.id][-2000:]
+        )
+        total = fmt_money(order.grand_total, order.currency)
+        return Outcome(
+            "info",
+            f"The {total} {order.merchant} charge from {txn.date:%b %-d} is already in YNAB "
+            f"{why}. Nothing was added or changed.",
+            order_id=order.id,
+        )
 
     # -- follow-ups --------------------------------------------------------
 
@@ -352,6 +482,8 @@ class Pipeline:
             return Outcome("info", "That one is already taken care of.")
         if question.question_type == "total":
             return self._answer_total(question, order, text)
+        if question.question_type == "existing":
+            return self._answer_existing(question, order, text)
         return self._answer_category(question, order, text)
 
     def _again(self, question: Question, reply: str) -> Outcome:
@@ -361,6 +493,18 @@ class Pipeline:
             "payload": question.payload,
         }
         return Outcome("question", reply, order_id=question.order_id, question=again)
+
+    def _answer_existing(self, question: Question, order: Order, text: str) -> Outcome:
+        answer = text.strip().lower().rstrip(".!")
+        if answer in _YES or answer in ("update", "replace"):
+            action = "update"
+        elif answer in ("no", "n", "nope", "leave", "leave it", "keep", "keep it"):
+            action = "skip"
+        else:
+            return self._again(question, "Reply yes to replace that charge's details, or no.")
+        self.ledger.answer_question(question.id)
+        decision = (action, question.payload["transaction_id"])
+        return self._post(order, self.ledger.items(order.id), decision)
 
     def _answer_total(self, question: Question, order: Order, text: str) -> Outcome:
         answer = text.strip().lower().rstrip(".!")

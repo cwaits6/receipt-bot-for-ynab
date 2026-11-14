@@ -264,6 +264,10 @@ class YnabClient:
     def delete_transaction(self, transaction_id: str) -> None:
         self._request("DELETE", self._plan(f"/transactions/{transaction_id}"))
 
+    def recent_transactions(self, account_id: str, since_date: date) -> list[Txn]:
+        """Every transaction on the account dated on or after `since_date`."""
+        return self.account_transactions(account_id, since_date=since_date)[0]
+
     def account_transactions(
         self,
         account_id: str,
