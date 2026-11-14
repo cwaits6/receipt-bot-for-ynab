@@ -1,0 +1,46 @@
+Final Details for Order #111-0000000-0000002
+Print this page for your records.
+
+Order Placed: November 3, 2026
+Amazon.com order number: 111-0000000-0000002
+Order Total: $57.89
+
+Shipped on November 4, 2026
+
+Items Ordered Price
+1 of: Good Boy Kibble Adult Dry Dog Food, Chicken & Rice Formula, 30 lb. Bag
+Sold by: Amazon.com Services, Inc
+Condition: New
+$31.99
+2 of: Sturdy Tall Kitchen Drawstring Trash Bags, 13 Gallon, 90 Count
+(Pack of 1), Unscented
+Sold by: Example Seller LLC (seller profile)
+Condition: New
+$11.19
+
+Shipping Address:
+Test Person
+123 EXAMPLE ST
+ANYTOWN, ZZ 00000
+United States
+
+Shipping Speed:
+Two-Day Shipping
+
+Payment information
+Payment Method:
+Visa | Last digits: 0000
+Billing address
+Test Person
+123 EXAMPLE ST
+ANYTOWN, ZZ 00000
+United States
+Item(s) Subtotal: $54.37
+Shipping & Handling: $0.00
+-----
+Total before tax: $54.37
+Estimated tax to be collected: $3.52
+-----
+Grand Total: $57.89
+
+Credit Card transactions Visa ending in 0000: November 4, 2026: $57.89
