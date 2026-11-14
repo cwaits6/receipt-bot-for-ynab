@@ -14,6 +14,8 @@ services:
       - "daemon"
       - "--http"
       - "0.0.0.0:8080"
+      # Keep message contents out of the container log.
+      - "--no-receive-stdout"
       - "--ignore-stories"
       - "--ignore-avatars"
       - "--ignore-stickers"
