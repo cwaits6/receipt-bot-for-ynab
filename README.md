@@ -166,6 +166,21 @@ set `dry_run: false`.
 The bot container runs as a non-root user with a read-only root filesystem. Its only writable
 path is the `bot-data` volume. The signal-cli daemon publishes no ports.
 
+### Prebuilt images
+
+CI publishes multi-arch (amd64 and arm64) images to `ghcr.io/cwaits6/receipt-bot-for-ynab`:
+`:vX.Y.Z` and `:latest` for releases, `:<branch>` for open pull requests. Each image is signed
+with [cosign](https://docs.sigstore.dev/cosign/) keyless signing, so there is no public key to
+fetch. The signature ties the image to the GitHub Actions workflow that built it. Check it
+before you run an image:
+
+```sh
+cosign verify ghcr.io/cwaits6/receipt-bot-for-ynab:latest \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/krypsis-io/\.github/\.github/workflows/container-build\.yml@' \
+  --certificate-github-workflow-repository cwaits6/receipt-bot-for-ynab
+```
+
 ## Using it
 
 - **Log an order:** share the invoice PDF, a screenshot, or paste the order text into the group.
