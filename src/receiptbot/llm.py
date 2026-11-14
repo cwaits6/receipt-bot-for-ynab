@@ -165,6 +165,7 @@ class LlmClient:
 
     def _parse(self, *, system: str, content: list[dict[str, Any]], schema: type, effort: str):
         self.calls += 1
+        purpose = "read" if schema is ReceiptReading else "categorize"
         try:
             response = self._client.messages.parse(
                 model=self.model,
@@ -180,6 +181,16 @@ class LlmClient:
             raise LlmError("the Claude API could not be reached") from exc
         except anthropic.APIStatusError as exc:
             raise LlmError(f"the Claude API returned an error ({exc.status_code})") from exc
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            # Token counts only, so the cost of each fallback call is visible in the log.
+            log.info(
+                "Model call (%s, %s): %s input tokens, %s output tokens",
+                purpose,
+                self.model,
+                getattr(usage, "input_tokens", "?"),
+                getattr(usage, "output_tokens", "?"),
+            )
         if response.stop_reason == "refusal":
             raise LlmError("the model declined to read this document")
         if response.stop_reason == "max_tokens":

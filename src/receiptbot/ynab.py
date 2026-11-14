@@ -221,6 +221,30 @@ class YnabClient:
 
         return self._cached("categories", load)
 
+    def create_category_group(self, name: str) -> str:
+        """Create a category group and return its id."""
+        data = self._request(
+            "POST", self._plan("/category_groups"), json={"category_group": {"name": name[:50]}}
+        )
+        self._cache.pop("categories", None)
+        return data["category_group"]["id"]
+
+    def create_category(self, group_id: str, name: str) -> str:
+        """Create a category in a group and return its id."""
+        body = {"category": {"name": name, "category_group_id": group_id}}
+        data = self._request("POST", self._plan("/categories"), json=body)
+        self._cache.pop("categories", None)
+        return data["category"]["id"]
+
+    def category_groups(self) -> dict[str, str]:
+        """Visible category group names mapped to ids."""
+        groups = self._request("GET", self._plan("/categories"))["category_groups"]
+        return {
+            g["name"]: g["id"]
+            for g in groups
+            if not (g.get("hidden") or g.get("deleted") or g.get("internal"))
+        }
+
     # -- transactions ------------------------------------------------------
 
     def create_transaction(self, txn: NewTxn) -> Txn:
