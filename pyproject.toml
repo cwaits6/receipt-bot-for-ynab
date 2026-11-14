@@ -1,0 +1,42 @@
+[project]
+name = "receiptbot"
+version = "0.1.0"
+description = "Self-hosted Signal bot that turns shared receipts into categorized YNAB transactions."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.8.0",
+    "httpx>=0.28.1",
+    "pydantic>=2.14.3",
+    "pypdf>=7.1.0",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+receiptbot = "receiptbot.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/receiptbot"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.5",
+]

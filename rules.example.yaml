@@ -1,0 +1,5 @@
+# Copy to rules.yaml (git-ignored). Hand-written keyword -> YNAB category name.
+# An item matches when every word of the keyword appears in its description.
+# Category names must match your plan exactly (case does not matter).
+dog food: Pets
+trash bags: Household

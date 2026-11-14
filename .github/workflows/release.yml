@@ -1,0 +1,18 @@
+name: Release
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+jobs:
+  release:
+    uses: krypsis-io/.github/.github/workflows/release-please.yml@main
+    with:
+      release-type: python
+      # This repo supplies release-please-config.json itself (it also bumps uv.lock).
+      bootstrap-config: false
+    secrets:
+      APP_CLIENT_ID: ${{ secrets.APP_CLIENT_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

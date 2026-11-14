@@ -1,0 +1,52 @@
+# Copy to config.yaml (git-ignored). Run `uv run scripts/ynab_ids.py` to find the ids.
+
+ynab:
+  plan_id: "00000000-0000-0000-0000-000000000000"
+  # The bot refuses to start unless the plan with this id has exactly this name.
+  plan_name: "Test"
+  default_account_id: "00000000-0000-0000-0000-000000000000"
+  # Optional, for households with more than one card: card last four -> account id.
+  card_map: {}
+  # false: transactions are created unapproved so a person reviews them in YNAB.
+  approved: false
+
+signal:
+  # Base URL of the signal-cli daemon's HTTP interface.
+  url: "http://signal-cli:8080"
+  # Base64 group id, from the `listGroups` call described in the README.
+  group_id: "REPLACE_WITH_BASE64_GROUP_ID="
+  # Only these people can use the bot. id is a phone number or a Signal account UUID.
+  allowed_senders:
+    - id: "+15550100001"
+      name: "Alex"
+    - id: "+15550100002"
+      name: "Sam"
+
+llm:
+  # false: never call the Claude API; the bot asks a person instead.
+  enabled: true
+  model: "claude-haiku-5-5"
+  # Below this confidence a model category guess becomes a question in the group.
+  min_confidence: 0.8
+
+reconcile:
+  interval_minutes: 30
+  # Bank imports with no receipt are asked about after this many days.
+  grace_days: 2
+  # How long after an order its card charges are expected to arrive.
+  window_days: 21
+  recurring_tolerance: 0.05
+
+limits:
+  max_file_bytes: 10485760
+  max_pdf_pages: 15
+  min_text_chars: 150
+
+# true: do everything except write to YNAB, and say so in the reply.
+dry_run: true
+# true: keep a copy of each shared document under data/attachments/.
+keep_attachments: false
+
+data_dir: "data"
+rules_file: "rules.yaml"
+recurring_file: "recurring.yaml"

@@ -1,0 +1,43 @@
+Final Details for Order #111-0000000-0000001
+Print this page for your records.
+
+Order Placed: November 3, 2026
+Amazon.com order number: 111-0000000-0000001
+Order Total: $31.99
+
+Shipped on November 4, 2026
+
+Items Ordered Price
+1 of: Good Boy Kibble Adult Dry Dog Food, Chicken & Rice Formula, 30 lb. Bag
+Sold by: Amazon.com Services, Inc
+Condition: New
+$31.99
+
+Shipping Address:
+Test Person
+123 EXAMPLE ST
+ANYTOWN, ZZ 00000
+United States
+
+Shipping Speed:
+Two-Day Shipping
+
+Payment information
+Payment Method:
+Visa | Last digits: 0000
+Billing address
+Test Person
+123 EXAMPLE ST
+ANYTOWN, ZZ 00000
+United States
+Item(s) Subtotal: $31.99
+Shipping & Handling: $0.00
+-----
+Total before tax: $31.99
+Estimated tax to be collected: $0.00
+-----
+Grand Total: $31.99
+
+Credit Card transactions Visa ending in 0000: November 4, 2026: $31.99
+
+To view the status of your order, return to Order Summary.

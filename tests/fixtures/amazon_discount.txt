@@ -1,0 +1,38 @@
+Final Details for Order #111-0000000-0000003
+Print this page for your records.
+
+Order Placed: October 28, 2026
+Amazon.com order number: 111-0000000-0000003
+Order Total: $40.36
+
+Shipped on October 29, 2026
+
+Items Ordered Price
+1 of: Brightleaf Laundry Detergent Pacs, Fresh Scent, 81 Count $24.99
+Sold by: Amazon.com Services, Inc
+Condition: New
+1 of: Paws & Co Rope Tug Dog Toy for Large Dogs
+Sold by: Example Pet Supply (seller profile)
+Condition: New
+$14.50
+
+Shipping Address:
+Test Person
+123 EXAMPLE ST
+ANYTOWN, ZZ 00000
+United States
+
+Payment information
+Payment Method:
+Visa | Last digits: 0000
+Item(s) Subtotal: $39.49
+Shipping & Handling: $5.99
+Free Shipping: -$5.99
+Promotion Applied: -$2.00
+-----
+Total before tax: $37.49
+Estimated tax to be collected: $2.87
+-----
+Grand Total: $40.36
+
+Credit Card transactions Visa ending in 0000: October 29, 2026: $40.36
