@@ -1,14 +1,22 @@
 # receiptbot plus a signal-cli daemon. See README.md for the one-time Signal setup.
 #
-# The official signal-cli image is x86_64 only. On arm64 use the community image
-# registry.gitlab.com/packaging/signal-cli/signal-cli-native instead (see the
-# signal-cli wiki, "Binary distributions").
+# The official signal-cli image is x86_64 only. On arm64 (Raspberry Pi) add the override:
+#   docker compose -f docker-compose.yml -f docker-compose.arm64.yml up -d --build
 
 services:
   signal-cli:
     image: ghcr.io/asamk/signal-cli:0.14.10
     restart: unless-stopped
-    command: ["-a", "${SIGNAL_ACCOUNT}", "daemon", "--http", "0.0.0.0:8080", "--send-read-receipts"]
+    # No --send-read-receipts: on a linked account that would mark every chat as read.
+    command:
+      - "-a"
+      - "${SIGNAL_ACCOUNT}"
+      - "daemon"
+      - "--http"
+      - "0.0.0.0:8080"
+      - "--ignore-stories"
+      - "--ignore-avatars"
+      - "--ignore-stickers"
     volumes:
       - signal-state:/var/lib/signal-cli
     # No published ports: only the bot can reach the daemon, over the Compose network.

@@ -1,0 +1,22 @@
+# arm64 override (Raspberry Pi and similar). Uses the community-built native image
+# listed on the signal-cli wiki ("Binary distributions"), pinned by digest because
+# it publishes no version tags. This digest is signal-cli 0.14.10.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.arm64.yml up -d --build
+
+services:
+  signal-cli:
+    image: registry.gitlab.com/packaging/signal-cli/signal-cli-native@sha256:38a86ea5cab0369e9f4af55c5021114e77ed786b0cd82f7b770b4ccf342f6afd
+    # This image's entrypoint does not set a config dir, so set the same one the
+    # official image uses. State is then interchangeable between the two (the
+    # user id differs: 101 here, 999 in the official image).
+    command: !override
+      - "--config=/var/lib/signal-cli"
+      - "-a"
+      - "${SIGNAL_ACCOUNT}"
+      - "daemon"
+      - "--http"
+      - "0.0.0.0:8080"
+      - "--ignore-stories"
+      - "--ignore-avatars"
+      - "--ignore-stickers"

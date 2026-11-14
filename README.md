@@ -145,8 +145,12 @@ Copy the group's base64 id into `signal.group_id`, and list each household membe
 `signal.allowed_senders` with their phone number (or Signal account UUID) and a display name.
 You can turn the invite link off again afterwards.
 
-The official signal-cli image is x86_64 only. On arm64, switch the image in `docker-compose.yml`
-to the community build noted in the comment at the top of that file.
+The official signal-cli image is x86_64 only. On arm64 (a Raspberry Pi, for example) add the
+override file to every `docker compose` command:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.arm64.yml up -d --build
+```
 
 ### 4. Start it
 
