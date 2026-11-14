@@ -1,0 +1,15 @@
+{
+  "is_receipt": true,
+  "merchant": "Corner Hardware",
+  "order_number": "000123",
+  "order_date": "2026-11-02",
+  "currency": "USD",
+  "grand_total": "12.68",
+  "payment_last4": "0000",
+  "items": [
+    {"description": "Wood screws box", "quantity": 1, "line_total": "6.49"},
+    {"description": "Painter's tape", "quantity": 1, "line_total": "5.25"}
+  ],
+  "adjustments": [{"label": "Sales tax", "amount": "0.94"}],
+  "notes": ""
+}

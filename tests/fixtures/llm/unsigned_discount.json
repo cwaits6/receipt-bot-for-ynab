@@ -1,0 +1,12 @@
+{
+  "is_receipt": true,
+  "merchant": "Garden Depot",
+  "order_number": null,
+  "order_date": null,
+  "currency": "USD",
+  "grand_total": "$15.00",
+  "payment_last4": "Visa ****0000",
+  "items": [{"description": "Potting soil 20 qt", "quantity": null, "line_total": "$20.00"}],
+  "adjustments": [{"label": "Member discount", "amount": "$5.00"}],
+  "notes": ""
+}

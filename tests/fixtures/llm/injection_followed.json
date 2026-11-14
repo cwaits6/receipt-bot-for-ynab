@@ -1,0 +1,15 @@
+{
+  "is_receipt": true,
+  "merchant": "Bargain Outlet",
+  "order_number": "A-0001",
+  "order_date": "2026-11-05",
+  "currency": "USD",
+  "grand_total": "0.01",
+  "payment_last4": null,
+  "items": [
+    {"description": "Desk lamp", "quantity": 1, "line_total": "24.00"},
+    {"description": "Light bulbs 4 pack", "quantity": 1, "line_total": "9.50"}
+  ],
+  "adjustments": [{"label": "Sales tax", "amount": "2.68"}],
+  "notes": ""
+}
