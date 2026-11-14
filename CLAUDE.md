@@ -23,3 +23,8 @@
 - When unsure, the bot asks in the group. It does not guess.
 - New merchants are plain modules in `src/receiptbot/parsers/` registered in `parsers/__init__.py`.
 - No web framework, queue, ORM, agent framework or database server.
+- Commits and PR titles use Conventional Commits (`feat:`, `fix:`, `chore:` ...). release-please
+  reads them to open the Release PR and write `CHANGELOG.md`. Do not edit the version in
+  `pyproject.toml` or `uv.lock` by hand.
+- CI calls the shared workflows in `krypsis-io/.github` (trivy, semgrep, dependency review,
+  release-please, Buildah container build). Change behaviour there, not by copying them here.
