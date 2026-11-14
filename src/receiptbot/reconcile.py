@@ -20,14 +20,13 @@ import yaml
 
 from receiptbot.categorize import Categorizer, match_category, normalize_key, shorten
 from receiptbot.ledger import Ledger, Question
-from receiptbot.models import Category
+from receiptbot.models import Category, merchant_aliases
 from receiptbot.settings import Settings
 from receiptbot.validate import allocate, fmt_money, parse_money, to_milliunits, truncate_words
 from receiptbot.ynab import MEMO_MAX, Txn, YnabClient, YnabError
 
 log = logging.getLogger(__name__)
 
-MERCHANT_ALIASES: dict[str, tuple[str, ...]] = {"amazon": ("amazon", "amzn")}
 MAX_SUBSET_CANDIDATES = 12
 MAX_SHIPMENTS = 5
 MAX_ITEMS_FOR_SHIPMENT_SPLIT = 8
@@ -58,6 +57,7 @@ class OpenOrder:
     transaction_id: str
     order_number: str | None
     lines: tuple[OrderLine, ...]
+    account_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -98,32 +98,45 @@ def _letters(text: str) -> str:
 
 def payee_matches(txn: Txn, merchant: str) -> bool:
     """Does the bank's payee text look like this merchant?"""
-    wanted = _letters(merchant)
-    if not wanted:
-        return False
-    aliases = MERCHANT_ALIASES.get(wanted, (wanted,))
+    aliases = merchant_aliases(merchant)
     names = (txn.payee_name, txn.import_payee_name, txn.import_payee_name_original)
     haystack = " ".join(_letters(name) for name in names if name)
     return any(alias in haystack for alias in aliases)
 
 
-def may_modify(txn: Txn, own_ids: set[str] | frozenset[str]) -> bool:
+def may_modify(
+    txn: Txn, own_ids: set[str] | frozenset[str], bot_memos: dict[str, str] | None = None
+) -> bool:
     """Rule 7: never touch a reconciled transaction, and never touch one the bot
-    did not create unless it is an unapproved import with an empty memo."""
+    did not create unless it is an unapproved import whose memo is empty or is
+    still exactly the memo the bot itself wrote there."""
     if txn.deleted or txn.cleared == "reconciled":
         return False
     if txn.id in own_ids:
         return True
-    return txn.is_import and not txn.approved and not (txn.memo or "").strip()
+    memo = (txn.memo or "").strip()
+    ours = bool(memo) and (bot_memos or {}).get(txn.id) == memo
+    return txn.is_import and not txn.approved and (not memo or ours)
 
 
-def is_open_import(txn: Txn, own_ids: set[str] | frozenset[str]) -> bool:
+def is_open_import(
+    txn: Txn, own_ids: set[str] | frozenset[str], bot_memos: dict[str, str] | None = None
+) -> bool:
     return (
         txn.is_import
         and not txn.is_matched
         and txn.amount < 0
         and txn.id not in own_ids
-        and may_modify(txn, own_ids)
+        and may_modify(txn, own_ids, bot_memos)
+    )
+
+
+def _could_belong(txn: Txn, order: OpenOrder, window_days: int) -> bool:
+    """Same account, payee looks like the merchant, inside the order's date window."""
+    return (
+        (not order.account_id or txn.account_id == order.account_id)
+        and payee_matches(txn, order.merchant)
+        and _in_window(txn, order, window_days)
     )
 
 
@@ -146,13 +159,7 @@ def explain_orders(
     ordered = sorted(orders, key=lambda o: (o.order_date, o.id))
 
     def candidates(order: OpenOrder) -> list[Txn]:
-        return [
-            t
-            for t in imports
-            if t.id not in used
-            and payee_matches(t, order.merchant)
-            and _in_window(t, order, window_days)
-        ]
+        return [t for t in imports if t.id not in used and _could_belong(t, order, window_days)]
 
     # Pass 1: one import equal to the order total, unambiguous in both directions.
     exact: dict[int, list[Txn]] = {
@@ -172,21 +179,33 @@ def explain_orders(
             unexplained.append(order)
         # several exact matches, or a contested one: ambiguous, leave it
 
-    # Pass 2: a unique set of imports that sums to the order total.
+    # Pass 2: a unique set of imports that sums to the order total. Every
+    # unexplained order's sets are found first, so that imports two orders could
+    # both use are left for a person instead of going to whichever came first.
+    subsets: dict[int, list[tuple[Txn, ...]]] = {}
     for order in unexplained:
         pool = [t for t in candidates(order) if -t.amount < order.total]
         if not 2 <= len(pool) <= MAX_SUBSET_CANDIDATES:
             continue
         pool.sort(key=lambda t: (t.date, t.id))
-        subsets = [
+        subsets[order.id] = [
             combo
             for size in range(2, min(MAX_SHIPMENTS, len(pool)) + 1)
             for combo in itertools.combinations(pool, size)
             if -sum(t.amount for t in combo) == order.total
         ]
-        if len(subsets) == 1:
-            used.update(t.id for t in subsets[0])
-            found.append(Explanation(order, subsets[0]))
+    for order in unexplained:
+        mine = subsets.get(order.id, [])
+        if len(mine) != 1:
+            continue
+        ids = {t.id for t in mine[0]}
+        contested = any(
+            ids & {t.id for combo in others for t in combo}
+            for other_id, others in subsets.items()
+            if other_id != order.id
+        )
+        if not contested:
+            found.append(Explanation(order, mine[0]))
     return found
 
 
@@ -304,6 +323,8 @@ class PlanInput:
     grace_days: int = 2
     recurring_tolerance: float = 0.05
     category_names: dict[str, str] = field(default_factory=dict)
+    bot_memos: dict[str, str] = field(default_factory=dict)  # import id -> memo the bot wrote
+    stale_notified: set[int] = field(default_factory=set)
 
 
 def plan_actions(data: PlanInput) -> list[Action]:
@@ -352,7 +373,8 @@ def plan_actions(data: PlanInput) -> list[Action]:
     open_imports = [
         t
         for t in data.transactions
-        if is_open_import(t, own_ids) and any(payee_matches(t, m) for m in data.merchants)
+        if is_open_import(t, own_ids, data.bot_memos)
+        and any(payee_matches(t, m) for m in data.merchants)
     ]
     explained: set[str] = set()
     for explanation in explain_orders(still_open, open_imports, data.window_days):
@@ -375,19 +397,34 @@ def plan_actions(data: PlanInput) -> list[Action]:
 
     # Step 6: imports with no receipt, once the grace period has passed.
     explained_orders = {a.order_id for a in actions if a.kind == "apply_imports"}
-    waiting = [o for o in still_open if o.id not in explained_orders]
+    waiting = []
+    for order in still_open:
+        if order.id in explained_orders:
+            continue
+        if (data.today - order.order_date).days <= data.window_days:
+            waiting.append(order)
+        elif order.id not in data.stale_notified:
+            # Its charges should have arrived by now. Say so once, and stop
+            # holding back questions about this merchant's imports for it.
+            total = fmt_money(Decimal(order.total) / 1000)
+            label = f" ({order.order_number})" if order.order_number else ""
+            actions.append(
+                Action(
+                    "notice_stale",
+                    f"order {order.id}: no matching bank charge after {data.window_days} days",
+                    order_id=order.id,
+                    message=f"I logged {total} at {order.merchant} on {order.order_date:%b %-d}"
+                    f"{label}, but no bank charge has matched it after {data.window_days} days. "
+                    "Please check it in YNAB.",
+                )
+            )
     questions = 0
     for txn in sorted(open_imports, key=lambda t: (t.date, t.id)):
         if txn.id in explained or txn.id in data.asked:
             continue
         if txn.date < data.not_before or (data.today - txn.date).days < data.grace_days:
             continue
-        if any(
-            payee_matches(txn, o.merchant)
-            and _in_window(txn, o, data.window_days)
-            and -txn.amount <= o.total
-            for o in waiting
-        ):
+        if any(_could_belong(txn, o, data.window_days) and -txn.amount <= o.total for o in waiting):
             continue  # may still be a shipment of an open order
         item = match_recurring(txn, data.recurring, data.recurring_tolerance)
         if item is not None:
@@ -520,6 +557,7 @@ class Reconciler:
             total=to_milliunits(order.grand_total),
             transaction_id=order.ynab_transaction_id,
             order_number=order.order_number,
+            account_id=order.account_id,
             lines=tuple(
                 OrderLine(
                     description=item.description,
@@ -537,13 +575,22 @@ class Reconciler:
         if not_before is None:
             not_before = today.isoformat()
             self.ledger.set("reconcile_start", not_before)
-        logged = [o for o in self.ledger.orders_in_state("logged") if not o.dry_run]
+        pending = {int(order_id) for order_id in self.ledger.get("pending_applies", {})}
+        logged = [
+            o
+            for o in self.ledger.orders_in_state("logged")
+            if not o.dry_run and o.id not in pending
+        ]
         matched = [o for o in self.ledger.orders_in_state("matched") if not o.dry_run]
         learned = set(self.ledger.get("learned_orders", []))
         recent = today - timedelta(days=CACHE_DAYS)
         candidates = [
             o for o in [*logged, *matched] if o.id not in learned and o.order_date >= recent
         ]
+        if self.settings.ynab.approved:
+            # The bot created these already approved, so approval is not a person's
+            # confirmation and teaches nothing.
+            candidates = []
         recurring = self.recurring()
         merchants = {o.merchant for o in self.ledger.orders_with_transactions()}
         merchants.update(item.merchant for item in recurring if item.merchant)
@@ -560,6 +607,8 @@ class Reconciler:
             grace_days=self.settings.reconcile.grace_days,
             recurring_tolerance=self.settings.reconcile.recurring_tolerance,
             category_names={c.id: c.name for c in self.categorizer.categories},
+            bot_memos=self.ledger.get("bot_memos", {}),
+            stale_notified=set(self.ledger.get("stale_notified", [])),
         )
 
     # -- applying ----------------------------------------------------------
@@ -576,29 +625,80 @@ class Reconciler:
         today = today or date.today()
         dry_run = self.settings.dry_run if dry_run is None else dry_run
         transactions = self.sync(today)
-        data = self.gather(today, transactions)
-        actions = plan_actions(data)
         by_id = {t.id: t for t in transactions}
-        own_ids = {o.transaction_id for o in [*data.logged_orders, *data.approved_candidates]}
         report = []
-        for action in actions:
+        if not dry_run:
+            report.extend(self._resume_pending(by_id))
+        data = self.gather(today, transactions)
+        own_ids = {o.transaction_id for o in [*data.logged_orders, *data.approved_candidates]}
+        for action in plan_actions(data):
             report.append(f"{'would ' if dry_run else ''}{action.kind}: {action.summary}")
             if dry_run:
                 continue
             try:
-                self._apply(action, by_id, own_ids, send)
+                self._apply(action, by_id, own_ids, data.bot_memos, send)
             except YnabError as exc:
                 log.error("Reconcile action %s failed: %s", action.kind, exc)
-                report.append(f"  failed: {exc}")
+                report.append(f"  failed, will retry next run: {exc}")
         for line in report:
             log.info("reconcile %s", line)
         return report
+
+    def _remember(self, key: str, value: Any, limit: int = 2000) -> None:
+        self.ledger.set(key, [*self.ledger.get(key, []), value][-limit:])
+
+    def _note_memo(self, transaction_id: str, memo: str) -> None:
+        memos = self.ledger.get("bot_memos", {})
+        memos[transaction_id] = memo
+        self.ledger.set("bot_memos", dict(list(memos.items())[-1000:]))
+
+    def _resume_pending(self, by_id: dict[str, Txn]) -> list[str]:
+        """Finish any apply_imports that failed part-way on an earlier run."""
+        report = []
+        for order_id in list(self.ledger.get("pending_applies", {})):
+            try:
+                self._finish_apply(int(order_id), by_id)
+                report.append(f"apply_imports: order {order_id} resumed and finished")
+            except YnabError as exc:
+                log.error("Resuming order %s failed: %s", order_id, exc)
+                report.append(f"apply_imports: order {order_id} still pending: {exc}")
+        return report
+
+    def _finish_apply(self, order_id: int, by_id: dict[str, Txn]) -> None:
+        """Write a recorded plan onto its imports, delete the placeholder, and
+        only then mark the order done. Safe to repeat: imports that already carry
+        the planned memo are skipped, and so is anything a person has since
+        approved or annotated."""
+        plan = self.ledger.get("pending_applies", {})[str(order_id)]
+        for txn_id, changes in plan["updates"]:
+            current = by_id.get(txn_id)
+            if current is None or current.deleted or current.approved:
+                continue
+            memo = (current.memo or "").strip()
+            if current.cleared == "reconciled" or memo == changes["memo"]:
+                continue
+            if memo and self.ledger.get("bot_memos", {}).get(txn_id) != memo:
+                continue
+            self.ynab.update_transaction(txn_id, changes)
+            by_id[txn_id] = current.model_copy(update={"memo": changes["memo"]})
+            self._note_memo(txn_id, changes["memo"])
+        try:
+            self.ynab.delete_transaction(plan["delete"])
+        except YnabError as exc:
+            if exc.status != 404:
+                raise
+        self.ledger.update_order(order_id, state="matched")
+        self._remember("learned_orders", order_id)
+        pending = self.ledger.get("pending_applies", {})
+        pending.pop(str(order_id), None)
+        self.ledger.set("pending_applies", pending)
 
     def _apply(
         self,
         action: Action,
         by_id: dict[str, Txn],
         own_ids: set[str],
+        bot_memos: dict[str, str],
         send: Callable[[str], int] | None,
     ) -> None:
         if action.kind == "mark_matched":
@@ -608,23 +708,26 @@ class Reconciler:
         elif action.kind == "learn":
             for key, category_id in action.rules:
                 self.categorizer.learn(key, category_id, "approved")
-            learned = self.ledger.get("learned_orders", [])
-            self.ledger.set("learned_orders", [*learned, action.order_id][-2000:])
+            self._remember("learned_orders", action.order_id)
         elif action.kind == "apply_imports":
-            # Guard again at the point of writing: only unapproved, memo-less imports.
-            if not all(may_modify(by_id[txn_id], own_ids) for txn_id, _ in action.updates):
+            # Guard again at the point of writing: only imports the bot may touch.
+            if not all(may_modify(by_id[i], own_ids, bot_memos) for i, _ in action.updates):
                 return
-            for txn_id, changes in action.updates:
-                self.ynab.update_transaction(txn_id, changes)
-            self.ynab.delete_transaction(action.delete_transaction_id)
-            self.ledger.update_order(action.order_id, state="matched")
-            learned = self.ledger.get("learned_orders", [])
-            self.ledger.set("learned_orders", [*learned, action.order_id][-2000:])
+            # Record the plan first so a failure part-way is finished next run
+            # instead of leaving the placeholder and the imports both counted.
+            pending = self.ledger.get("pending_applies", {})
+            pending[str(action.order_id)] = {
+                "updates": [[txn_id, changes] for txn_id, changes in action.updates],
+                "delete": action.delete_transaction_id,
+            }
+            self.ledger.set("pending_applies", pending)
+            self._finish_apply(action.order_id, by_id)
         elif action.kind == "annotate":
-            if not may_modify(by_id[action.transaction_id], own_ids):
+            if not may_modify(by_id[action.transaction_id], own_ids, bot_memos):
                 return
             for txn_id, changes in action.updates:
                 self.ynab.update_transaction(txn_id, changes)
+                self._note_memo(txn_id, changes["memo"])
             timestamp = send(action.message) if send else 0
             self.ledger.answer_question(
                 self.ledger.add_question(
@@ -636,6 +739,9 @@ class Reconciler:
             self.ledger.add_question(
                 timestamp, "import_memo", bank_transaction_id=action.transaction_id
             )
+        elif action.kind == "notice_stale" and send is not None:
+            send(action.message)
+            self._remember("stale_notified", action.order_id)
 
     # -- answers to "what was it?" -----------------------------------------
 
@@ -661,32 +767,42 @@ class Reconciler:
         )
 
     def _fetch(self, question: Question, expected_memo: str) -> Txn | None:
-        """The import, if the bot may still write to it."""
+        """The import, if the bot may still write to it. None means a person has
+        handled it; a YNAB failure is raised so the question stays open."""
         try:
             txn = self.ynab.get_transaction(question.bank_transaction_id)
-        except YnabError:
+        except YnabError as exc:
+            if exc.status != 404:
+                raise
             return None
         untouched = (txn.memo or "").strip() == expected_memo
         if txn.deleted or txn.approved or txn.cleared == "reconciled" or not untouched:
             return None
         return txn
 
+    def _handled(self, question: Question) -> Reply:
+        self.ledger.answer_question(question.id)
+        return Reply("Someone already handled that one in YNAB, so I left it alone.")
+
     def _answer_memo(self, question: Question, text: str) -> Reply:
         if not text:
             return self._again(question, "What was it? A few words is enough.")
         txn = self._fetch(question, "")
-        self.ledger.answer_question(question.id)
         if txn is None:
-            return Reply("Someone already handled that one in YNAB, so I left it alone.")
+            return self._handled(question)
         memo = truncate_words(text, MEMO_MAX)
         key = normalize_key(text)
         category_id = self.categorizer.from_rules(text)
         if self.settings.dry_run:
+            self.ledger.answer_question(question.id)
             return Reply(f'DRY RUN: would note {_describe(txn)} as "{memo}".')
         changes: dict[str, Any] = {"memo": memo}
         if category_id:
             changes["category_id"] = category_id
+        # The question is closed only after YNAB accepted the write.
         self.ynab.update_transaction(txn.id, changes)
+        self._note_memo(txn.id, memo)
+        self.ledger.answer_question(question.id)
         if not category_id:
             return Reply(
                 f'Noted. Which category is "{shorten(text)}"? Reply to this message.',
@@ -697,7 +813,7 @@ class Reconciler:
                 },
             )
         name = self.categorizer.name_of(category_id)
-        reply = Reply(f"Noted: {_describe(txn)} · {name}: {shorten(text)}")
+        reply = Reply(f"Noted: {_describe(txn)} \u00b7 {name}: {shorten(text)}")
         return self._maybe_offer(reply, txn, text, key, category_id)
 
     def _answer_category(self, question: Question, text: str) -> Reply:
@@ -707,15 +823,16 @@ class Reconciler:
                 question, f'I don\'t have one category that matches "{text[:40]}". Which is it?'
             )
         txn = self._fetch(question, question.payload.get("memo", ""))
-        self.ledger.answer_question(question.id)
         if txn is None:
-            return Reply("Someone already handled that one in YNAB, so I left it alone.")
+            return self._handled(question)
         if self.settings.dry_run:
+            self.ledger.answer_question(question.id)
             return Reply(f"DRY RUN: would set {_describe(txn)} to {category.name}.")
         self.ynab.update_transaction(txn.id, {"category_id": category.id})
+        self.ledger.answer_question(question.id)
         key = question.payload.get("key", "")
         self.categorizer.learn(key, category.id, "human")
-        reply = Reply(f"Noted: {_describe(txn)} · {category.name}")
+        reply = Reply(f"Noted: {_describe(txn)} \u00b7 {category.name}")
         return self._maybe_offer(reply, txn, question.payload.get("memo", ""), key, category.id)
 
     def _maybe_offer(self, reply: Reply, txn: Txn, text: str, key: str, category_id: str) -> Reply:

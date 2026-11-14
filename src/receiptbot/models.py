@@ -21,6 +21,33 @@ _KIND_WORDS: tuple[tuple[AdjustmentKind, tuple[str, ...]], ...] = (
 )
 
 
+# Canonical merchant name -> fragments that identify it in receipts and bank payees.
+MERCHANT_ALIASES: dict[str, tuple[str, ...]] = {"Amazon": ("amazon", "amzn")}
+
+
+def _alnum(text: str) -> str:
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def merchant_aliases(merchant: str) -> tuple[str, ...]:
+    """Fragments to look for in a bank payee for this merchant."""
+    wanted = _alnum(merchant)
+    for aliases in MERCHANT_ALIASES.values():
+        if any(alias in wanted for alias in aliases):
+            return aliases
+    return (wanted,) if wanted else ()
+
+
+def canonical_merchant(merchant: str) -> str:
+    """One spelling per known merchant ("Amazon.com" -> "Amazon") so payees stay
+    clean and reconciliation recognizes the bank's payee text."""
+    wanted = _alnum(merchant)
+    for name, aliases in MERCHANT_ALIASES.items():
+        if any(alias in wanted for alias in aliases):
+            return name
+    return merchant.strip()
+
+
 def adjustment_kind(label: str) -> AdjustmentKind:
     lowered = label.lower()
     for kind, words in _KIND_WORDS:

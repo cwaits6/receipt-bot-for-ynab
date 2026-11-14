@@ -41,7 +41,9 @@ def test_parse_money(text, expected):
     assert parse_money(text) == D(expected)
 
 
-@pytest.mark.parametrize("text", ["", "free", "$", "1.2.3", "$5 or $6"])
+@pytest.mark.parametrize(
+    "text", ["", "free", "$", "1.2.3", "$5 or $6", "12,50", "\u20ac12,50", "43,18", "1,23,456"]
+)
 def test_parse_money_rejects_non_amounts(text):
     with pytest.raises(ValueError):
         parse_money(text)

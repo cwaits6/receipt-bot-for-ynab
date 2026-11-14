@@ -21,7 +21,7 @@ from receiptbot.reconcile import (
     payee_matches,
     plan_actions,
 )
-from receiptbot.ynab import SubTxn, Txn
+from receiptbot.ynab import SubTxn, Txn, YnabError
 
 ACCT = "acct"
 
@@ -79,6 +79,8 @@ def kinds(actions):
 
 
 def test_payee_matching_uses_aliases_and_every_payee_field():
+    for merchant in ("Amazon.com", "Amazon.com Services LLC", "AMZN Mktp US"):
+        assert payee_matches(txn("a", -1000, "2026-11-04", payee="AMAZON MKTPL*AB12C"), merchant)
     assert payee_matches(txn("a", -1000, "2026-11-04", payee="AMZN Mktp US*1A2B3"), "Amazon")
     assert payee_matches(txn("a", -1000, "2026-11-04", payee="Amazon.com*AB12"), "Amazon")
     assert payee_matches(txn("a", -1000, "2026-11-04", payee="CORNER HARDWARE 12", payee_name="x"),
@@ -557,3 +559,141 @@ def test_answer_leaves_transactions_a_person_already_handled():
     reply = reconciler.answer(ledger.open_question(8100), "cat litter")
     assert "left it alone" in reply.text
     assert ynab.updated == []
+
+
+# -- regressions from review -------------------------------------------------
+
+
+def test_same_total_orders_do_not_grab_a_shared_set_of_imports():
+    orders = [order(1, 30000), order(2, 30000, on="2026-11-04")]
+    imports = [txn("i1", -10000, "2026-11-05"), txn("i2", -20000, "2026-11-06")]
+    assert explain_orders(orders, imports, 21) == []
+
+
+def test_imports_on_another_account_never_explain_an_order():
+    from dataclasses import replace
+
+    o = replace(order(1, 43180), account_id="card-a")
+    other = txn("i1", -43180, "2026-11-05").model_copy(update={"account_id": "card-b"})
+    assert explain_orders([o], [other], 21) == []
+    same = txn("i2", -43180, "2026-11-05").model_copy(update={"account_id": "card-a"})
+    assert len(explain_orders([o], [same], 21)) == 1
+
+
+def test_stale_order_gets_one_notice_and_stops_muting_questions():
+    o = order(1, 43180, on="2026-10-10")  # 34 days before TODAY
+    transactions = [
+        txn("ph-1", -43180, "2026-10-10", imported=False),
+        txn("i1", -14070, "2026-11-08"),
+    ]
+    actions = plan(logged_orders=[o], transactions=transactions)
+    assert kinds(actions) == ["notice_stale", "ask"]
+    assert "no bank charge has matched it after 21 days" in actions[0].message
+    quiet = plan(logged_orders=[o], transactions=transactions, stale_notified={1}, asked={"i1"})
+    assert quiet == []
+
+
+def test_import_the_bot_annotated_can_still_explain_a_late_receipt():
+    o = order(1, 14070, on="2026-11-07")
+    transactions = [
+        txn("ph-1", -14070, "2026-11-07", imported=False),
+        txn("i1", -14070, "2026-11-08", memo="cat litter"),
+    ]
+    assert plan(logged_orders=[o], transactions=transactions, asked={"i1"}) == []
+    [action] = plan(
+        logged_orders=[o], transactions=transactions, asked={"i1"}, bot_memos={"i1": "cat litter"}
+    )
+    assert action.kind == "apply_imports" and action.delete_transaction_id == "ph-1"
+    edited = [transactions[0], txn("i1", -14070, "2026-11-08", memo="cat litter (edited by me)")]
+    assert plan(logged_orders=[o], transactions=edited, bot_memos={"i1": "cat litter"}) == []
+
+
+class FlakyYnab(FakeYnab):
+    """Fails chosen calls once, like a timeout or a 500 part-way through."""
+
+    def __init__(self):
+        super().__init__()
+        self.fail_update_of: set[str] = set()
+        self.fail_delete = False
+        self.fail_get = False
+
+    def update_transaction(self, transaction_id, changes):
+        if transaction_id in self.fail_update_of:
+            self.fail_update_of.discard(transaction_id)
+            raise YnabError(500, "internal_server_error")
+        return super().update_transaction(transaction_id, changes)
+
+    def delete_transaction(self, transaction_id):
+        if self.fail_delete:
+            self.fail_delete = False
+            raise YnabError(0, "could not reach YNAB (ReadTimeout)")
+        return super().delete_transaction(transaction_id)
+
+    def get_transaction(self, transaction_id):
+        if self.fail_get:
+            self.fail_get = False
+            raise YnabError(429, "too_many_requests")
+        return super().get_transaction(transaction_id)
+
+
+def flaky_setup():
+    reconciler, ynab, ledger, order_id = logged_setup()
+    flaky = FlakyYnab()
+    flaky.transactions, flaky.created = ynab.transactions, ynab.created
+    reconciler.ynab = flaky
+    flaky.add(txn("i1", -34060, "2026-11-05"))
+    flaky.add(txn("i2", -23830, "2026-11-09"))
+    return reconciler, flaky, ledger, order_id
+
+
+@pytest.mark.parametrize("failure", ["second_update", "delete"])
+def test_partial_apply_is_finished_on_the_next_run(failure):
+    reconciler, ynab, ledger, order_id = flaky_setup()
+    if failure == "second_update":
+        ynab.fail_update_of = {"i2"}
+    else:
+        ynab.fail_delete = True
+    report = reconciler.run(today=TODAY)
+    assert any("will retry" in line for line in report)
+    assert ledger.get_order(order_id).state == "logged"  # not marked done on failure
+    assert ynab.deleted == []
+
+    report = reconciler.run(today=TODAY)
+    assert report == [f"apply_imports: order {order_id} resumed and finished"]
+    assert ynab.deleted == ["t-1"]
+    assert ynab.transactions["i1"].category_id == "c-pets"
+    assert ynab.transactions["i2"].category_id == "c-house"
+    assert [u[0] for u in ynab.updated] == ["i1", "i2"]  # each import written exactly once
+    assert ledger.get_order(order_id).state == "matched"
+    assert ledger.get("pending_applies") == {}
+    assert reconciler.run(today=TODAY) == []
+
+
+def test_failed_answer_keeps_the_question_open():
+    reconciler, ynab, ledger, _ = flaky_setup()
+    ledger.add_question(8200, "import_memo", bank_transaction_id="i1")
+    ynab.fail_get = True
+    with pytest.raises(YnabError):
+        reconciler.answer(ledger.open_question(8200), "cat litter")
+    assert ledger.open_question(8200) is not None
+
+    ynab.fail_update_of = {"i1"}
+    with pytest.raises(YnabError):
+        reconciler.answer(ledger.open_question(8200), "cat litter")
+    assert ledger.open_question(8200) is not None
+
+    reply = reconciler.answer(ledger.open_question(8200), "cat litter")
+    assert reply.text.startswith("Noted")
+    assert ledger.open_question(8200) is None
+    assert ledger.get("bot_memos") == {"i1": "cat litter"}
+
+
+def test_auto_approved_transactions_teach_nothing():
+    reconciler, ynab, ledger, _ = logged_setup()
+    reconciler.settings.ynab.approved = True
+    ynab.transactions["t-1"].approved = True
+    ynab.transactions["t-1"].subtransactions[1].category_id = "c-gifts"
+    assert reconciler.run(today=TODAY) == []
+    from receiptbot.categorize import normalize_key
+
+    assert ledger.get_rule(normalize_key(TRASH_BAGS)).category_id == "c-house"

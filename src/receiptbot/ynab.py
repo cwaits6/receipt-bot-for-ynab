@@ -145,9 +145,12 @@ class YnabClient:
 
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         for attempt in range(len(_BACKOFF_SECONDS) + 1):
-            response = self._http.request(
-                method, f"{BASE_URL}{path}", headers=self._headers, **kwargs
-            )
+            try:
+                response = self._http.request(
+                    method, f"{BASE_URL}{path}", headers=self._headers, **kwargs
+                )
+            except httpx.HTTPError as exc:
+                raise YnabError(0, f"could not reach YNAB ({type(exc).__name__})") from exc
             if response.status_code != 429:
                 break
             if attempt == len(_BACKOFF_SECONDS):

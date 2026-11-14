@@ -131,9 +131,14 @@ def match_category(answer: str, categories: list[Category]) -> Category | None:
     wanted = _plain(answer)
     if not wanted:
         return None
-    by_name: dict[str, Category] = {}
+    counts: dict[str, int] = {}
     for category in categories:
-        by_name.setdefault(_plain(category.name), category)
+        counts[_plain(category.name)] = counts.get(_plain(category.name), 0) + 1
+    if counts.get(wanted, 0) > 1:
+        return None  # two categories share this name; a person has to pick in YNAB
+    by_name = {
+        _plain(c.name): c for c in categories if counts[_plain(c.name)] == 1 and _plain(c.name)
+    }
     if wanted in by_name:
         return by_name[wanted]
     prefixed = [c for name, c in by_name.items() if name.startswith(wanted)]
@@ -275,8 +280,10 @@ class Categorizer:
         return None, guesses[:2]
 
     def _from_model(self, unknown: list[tuple[CategorizedItem, str]]) -> None:
-        names = [c.name for c in self.categories]
-        by_name = {c.name: c.id for c in reversed(self.categories)}
+        every = [c.name for c in self.categories]
+        # A name shared by two categories cannot be assigned by name, so it is not offered.
+        names = [name for name in every if every.count(name) == 1]
+        by_name = {c.name: c.id for c in self.categories if c.name in names}
         try:
             guesses = self.llm.categorize_items([title for _, title in unknown], names)
         except Exception:

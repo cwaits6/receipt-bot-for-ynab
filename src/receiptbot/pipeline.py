@@ -17,7 +17,7 @@ from typing import Any, Protocol
 from receiptbot.categorize import Categorizer, match_category
 from receiptbot.ledger import Ledger, Order, OrderItem, Question
 from receiptbot.llm import LlmError, ReadResult
-from receiptbot.models import Document, ParsedReceipt
+from receiptbot.models import Document, ParsedReceipt, canonical_merchant
 from receiptbot.parsers import run_parsers
 from receiptbot.pdftext import PdfError, extract_text
 from receiptbot.settings import Settings
@@ -134,7 +134,11 @@ class Pipeline:
         duplicate = self.ledger.find_duplicate(
             receipt.order_number, source_hash, include_dry_run=self.settings.dry_run
         )
-        if duplicate is not None:
+        if duplicate is not None and duplicate.state == "needs_attention":
+            # Still waiting on an answer (or stranded by a failure): a resend starts
+            # over. Nothing was posted for it, and its questions go with it.
+            self.ledger.delete_order(duplicate.id)
+        elif duplicate is not None:
             return self._duplicate(duplicate, model_used)
 
         if receipt.grand_total <= 0:
@@ -158,7 +162,7 @@ class Pipeline:
         order_id = self.ledger.create_order(
             source_hash=source_hash,
             order_number=receipt.order_number,
-            merchant=receipt.merchant,
+            merchant=canonical_merchant(receipt.merchant),
             order_date=order_date,
             currency=receipt.currency,
             grand_total=receipt.grand_total,
@@ -205,11 +209,8 @@ class Pipeline:
 
     def _duplicate(self, duplicate: Order, model_used: bool) -> Outcome:
         label = duplicate.order_number or "this document"
-        if duplicate.state == "needs_attention":
-            reply = f"I already have {label} and I'm waiting on an answer above."
-        else:
-            total = fmt_money(duplicate.grand_total, duplicate.currency)
-            reply = f"Already logged: {label}, {total} on {duplicate.order_date:%b %-d}."
+        total = fmt_money(duplicate.grand_total, duplicate.currency)
+        reply = f"Already logged: {label}, {total} on {duplicate.order_date:%b %-d}."
         return Outcome("duplicate", reply, order_id=duplicate.id, model_used=model_used)
 
     def _continue(self, order_id: int, guesses: dict[str, list[str]] | None = None) -> Outcome:
@@ -241,6 +242,7 @@ class Pipeline:
     def _post(self, order: Order, items: list[OrderItem]) -> Outcome:
         try:
             amounts = allocate([item.line_total for item in items], order.grand_total)
+            to_milliunits(order.grand_total)
         except ValueError:
             self.ledger.delete_order(order.id)
             return Outcome(

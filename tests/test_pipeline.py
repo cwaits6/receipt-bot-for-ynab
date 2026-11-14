@@ -137,11 +137,58 @@ def test_unknown_category_is_asked_then_learned_then_posted():
     assert stale.kind == "info" and len(ynab.created) == 1
 
 
-def test_resending_while_waiting_does_not_start_over():
-    pipeline, ynab, _, _ = make_pipeline()
-    run(pipeline, text_doc("amazon_single.txt"))
+def test_resending_while_waiting_starts_over_instead_of_getting_stuck():
+    pipeline, ynab, _, ledger = make_pipeline()
+    first = run(pipeline, text_doc("amazon_single.txt"))
+    pipeline.sent(first, bot_timestamp=2000)
     again = run(pipeline, text_doc("amazon_single.txt"))
-    assert again.kind == "duplicate" and "waiting on an answer" in again.reply
+    assert again.kind == "question"
+    assert ledger.open_question(2000) is None  # the old question went with the old order
+    assert len(ledger.orders_in_state("needs_attention")) == 1
+
+
+def test_network_failure_while_posting_does_not_strand_the_order():
+    import httpx
+
+    from receiptbot.ynab import YnabClient
+
+    def handler(request):
+        raise httpx.ConnectError("no route", request=request)
+
+    client = YnabClient("t", "plan", http=httpx.Client(transport=httpx.MockTransport(handler)))
+    try:
+        client.plans()
+    except YnabError as exc:
+        assert exc.status == 0 and "ConnectError" in exc.detail
+    else:
+        raise AssertionError("transport errors must surface as YnabError")
+
+    pipeline, ynab, _, ledger = make_pipeline()
+    teach(ledger, **{DOG_FOOD: "c-pets"})
+    ynab.fail_with = YnabError(0, "could not reach YNAB (ConnectError)")
+    assert run(pipeline, text_doc("amazon_single.txt")).kind == "error"
+    assert ledger.orders_in_state("needs_attention") == []
+    ynab.fail_with = None
+    assert run(pipeline, text_doc("amazon_single.txt")).kind == "logged"
+
+
+def test_merchant_read_by_model_is_stored_under_its_canonical_name():
+    reading = recorded("hardware_store.json") | {"merchant": "Amazon.com Services LLC"}
+    pipeline, ynab, _, ledger = make_pipeline(llm_outputs=[reading])
+    teach(ledger, **{"Wood screws box": "c-home", "Painter's tape": "c-home"})
+    outcome = run(pipeline, text_doc("other_store.txt"))
+    assert outcome.kind == "logged", outcome.reply
+    assert ynab.created[0].payee_name == "Amazon"
+    assert ledger.get_order(outcome.order_id).merchant == "Amazon"
+
+
+def test_comma_decimal_total_answer_is_rejected_not_multiplied():
+    pipeline, ynab, _, ledger = make_pipeline(llm_outputs=[recorded("injection_followed.json")])
+    outcome = run(pipeline, text_doc("injected_receipt.txt"))
+    pipeline.sent(outcome, bot_timestamp=3000)
+    again = pipeline.answer(ledger.open_question(3000), "36,18")
+    assert again.kind == "question" and "as a number" in again.reply
+    assert ledger.get_order(outcome.order_id).grand_total == D("0.01")
 
 
 def test_model_reads_unknown_layout_and_reply_is_marked():

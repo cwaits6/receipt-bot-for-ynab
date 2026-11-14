@@ -190,3 +190,17 @@ def test_changed_category_replaces_rule(ledger):
     cat.learn("dog toy", "c-gifts", "approved")
     rule = ledger.get_rule("dog toy")
     assert (rule.category_id, rule.origin) == ("c-gifts", "approved")
+
+
+def test_duplicate_category_names_are_ambiguous_everywhere(ledger):
+    cats = [
+        *CATS,
+        Category("c-auto", "Maintenance", "Auto"),
+        Category("c-fix", "Maintenance", "Home"),
+    ]
+    assert match_category("maintenance", cats) is None
+    assert match_category("Pets", cats).id == "c-pets"
+    llm = FakeLlm([CategoryGuess("Maintenance", 0.99)])
+    [result] = Categorizer(ledger, lambda: cats, llm=llm).assign([item("oil filter")])
+    assert result.category_id is None
+    assert "Maintenance" not in llm.calls[0][1]  # not offered to the model either

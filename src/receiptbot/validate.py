@@ -9,7 +9,9 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from receiptbot.models import ParsedReceipt
 
 CENT = Decimal("0.01")
-_MONEY_RE = re.compile(r"^\(?\s*([-+−]?)\s*[^\d\-+.,(]*\s*([-+−]?)\s*([\d,]*\.?\d+)\s*\)?$")
+_MONEY_RE = re.compile(
+    r"^\(?\s*([-+−]?)\s*[^\d\-+.,(]*\s*([-+−]?)\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)\s*\)?$"
+)
 
 
 def parse_money(text: str) -> Decimal:

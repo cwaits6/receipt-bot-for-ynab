@@ -22,7 +22,7 @@ ACK_EMOJI = "\U0001f440"
 HELP = (
     "Share an order invoice here (PDF, screenshot or pasted text) and I will log it in YNAB.\n"
     '• Reply "undo" to one of my "Logged" messages to remove that transaction.\n'
-    "• When I ask a question, reply to that message with the answer.\n"
+    '• When I ask a question, reply to that message with the answer, or "cancel" to drop it.\n'
     '• Send "help" to see this again.'
 )
 _CANCEL = {"undo", "cancel", "skip", "never mind", "nevermind"}
