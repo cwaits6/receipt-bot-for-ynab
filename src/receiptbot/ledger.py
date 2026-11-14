@@ -258,19 +258,20 @@ class Ledger:
         row = self.db.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
         return self._order(row) if row else None
 
-    def find_duplicate(self, order_number: str | None, source_hash: str) -> Order | None:
+    def find_duplicate(
+        self, order_number: str | None, source_hash: str, *, include_dry_run: bool = False
+    ) -> Order | None:
         """An earlier, not-reverted order with this order number, or with this
-        content hash when there is no order number."""
-        if order_number:
-            row = self.db.execute(
-                "SELECT * FROM orders WHERE order_number=? AND state!='reverted' ORDER BY id",
-                (order_number,),
-            ).fetchone()
-        else:
-            row = self.db.execute(
-                "SELECT * FROM orders WHERE source_hash=? AND state!='reverted' ORDER BY id",
-                (source_hash,),
-            ).fetchone()
+        content hash when there is no order number. Dry-run rows only count
+        while the bot itself is in dry-run mode."""
+        column, value = (
+            ("order_number", order_number) if order_number else ("source_hash", source_hash)
+        )
+        dry = "" if include_dry_run else " AND dry_run=0"
+        row = self.db.execute(
+            f"SELECT * FROM orders WHERE {column}=? AND state!='reverted'{dry} ORDER BY id",
+            (value,),
+        ).fetchone()
         return self._order(row) if row else None
 
     def order_by_reply(self, reply_timestamp: int) -> Order | None:
