@@ -53,11 +53,15 @@ class Incoming:
 
 def parse_event(payload: dict[str, Any]) -> Incoming | None:
     """Turn one received event into an Incoming, or None for anything that is
-    not a normal message (receipts, typing, sync messages, reactions)."""
+    not a normal message (receipts, typing, read syncs, reactions)."""
     payload = payload.get("params", payload)
     payload = payload.get("result", payload)
     envelope = payload.get("envelope") or {}
     message = envelope.get("dataMessage")
+    if message is None:
+        # When signal-cli is a linked device on a person's own account, what that
+        # person sends from their phone arrives as a sync copy, not a data message.
+        message = (envelope.get("syncMessage") or {}).get("sentMessage")
     if not isinstance(message, dict) or message.get("reaction") or message.get("remoteDelete"):
         return None
     attachments = tuple(

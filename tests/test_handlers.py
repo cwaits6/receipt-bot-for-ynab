@@ -200,3 +200,14 @@ def test_keep_attachments_off_by_default_and_on_when_set(tmp_path):
     bot, transport, _, _ = make_bot(settings=kept)
     bot.handle(message(attachments=[pdf_attachment(transport)]))
     assert len(list((tmp_path / "attachments").glob("*.pdf"))) == 1
+
+
+def test_bot_never_reacts_to_its_own_messages_on_a_linked_account():
+    """Linked to a person's account, the bot's replies are sent as that person."""
+    from dataclasses import replace
+
+    bot, transport, ynab, ledger = make_bot()
+    bot.handle(message("help"))
+    echo = replace(message(fixture_text("amazon_single.txt")), timestamp=transport.last_timestamp)
+    bot.handle(echo)
+    assert len(transport.sent) == 1 and transport.reactions == []

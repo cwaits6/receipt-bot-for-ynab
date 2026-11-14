@@ -122,6 +122,17 @@ If `register` reports that a captcha is required, follow the link it prints, sol
 the token with `--captcha`. See the
 [signal-cli documentation](https://github.com/AsamK/signal-cli) for details.
 
+**Or link to an existing account instead.** signal-cli can run as a linked device on your own
+Signal account, like Signal Desktop, so no second number is needed:
+
+```sh
+docker compose run --rm signal-cli link -n "Receipt Bot"
+```
+
+Scan the printed `sgnl://` URI as a QR code from your phone (Settings → Linked Devices), set
+`SIGNAL_ACCOUNT` to your own number, and skip `joinGroup`: a linked device is already in your
+groups. In this mode the bot's replies appear in the group as sent by you.
+
 Then put the bot in your group. In the Signal app, open the group, enable its invite link, and
 copy it:
 

@@ -64,13 +64,23 @@ class Bot:
 
     # -- sending -----------------------------------------------------------
 
+    def _sent(self, timestamp: int) -> int:
+        """Remember what the bot sent. On a linked account its messages come
+        from the same person it listens to, so it must never react to them."""
+        self.ledger.set(
+            "sent_timestamps", [*self.ledger.get("sent_timestamps", []), timestamp][-300:]
+        )
+        return timestamp
+
     def _reply(self, msg: Incoming, text: str) -> int:
-        return self.transport.send(
-            self.signal.group_id, text, quote_timestamp=msg.timestamp, quote_author=msg.sender
+        return self._sent(
+            self.transport.send(
+                self.signal.group_id, text, quote_timestamp=msg.timestamp, quote_author=msg.sender
+            )
         )
 
     def _post(self, text: str) -> int:
-        return self.transport.send(self.signal.group_id, text)
+        return self._sent(self.transport.send(self.signal.group_id, text))
 
     def _deliver(self, msg: Incoming, outcome: Outcome) -> None:
         timestamp = self._reply(msg, outcome.reply)
@@ -86,7 +96,7 @@ class Bot:
         name = self.signal.sender_name(msg.sender_number, msg.sender_uuid)
         if name is None:
             return
-        if self._seen(msg):
+        if msg.timestamp in self.ledger.get("sent_timestamps", []) or self._seen(msg):
             return
         try:
             self._route(msg, name)

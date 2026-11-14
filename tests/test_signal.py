@@ -128,3 +128,33 @@ def test_event_stream_yields_messages_and_skips_noise():
             stop.set()
     assert got == ["one", "two"]
     assert headers_seen == ["0"]
+
+
+def test_own_message_from_linked_account_arrives_as_sync_and_is_parsed():
+    """Linked-device mode: the account owner's phone messages are sync copies."""
+    sent = {
+        "destination": None,
+        "timestamp": 1700000005000,
+        "message": "",
+        "groupInfo": {"groupId": GROUP, "type": "DELIVER"},
+        "attachments": [{"contentType": "image/png", "id": "shot", "size": 10}],
+    }
+    event = {
+        "envelope": {
+            "source": "+15550100001",
+            "sourceNumber": "+15550100001",
+            "sourceUuid": "11111111-1111-4111-8111-111111111111",
+            "timestamp": 1700000005000,
+            "syncMessage": {"sentMessage": sent},
+        }
+    }
+    msg = parse_event(event)
+    assert (msg.sender, msg.group_id, msg.timestamp) == ("+15550100001", GROUP, 1700000005000)
+    assert msg.attachments[0].id == "shot"
+
+
+def test_other_sync_messages_are_ignored():
+    read_sync = {"envelope": {"syncMessage": {"readMessages": [{"timestamp": 1}]}}}
+    assert parse_event(read_sync) is None
+    reaction = {"envelope": {"syncMessage": {"sentMessage": {"reaction": {"emoji": "x"}}}}}
+    assert parse_event(reaction) is None
