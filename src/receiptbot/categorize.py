@@ -156,7 +156,7 @@ class SeedRule:
 
 def load_seed_rules(path: Path, categories: list[Category]) -> list[SeedRule]:
     """Read rules.yaml: `keyword: Category Name` entries written by the owner."""
-    if not path.exists():
+    if not path.is_file():
         return []
     raw = yaml.safe_load(path.read_text()) or {}
     if not isinstance(raw, dict):
@@ -234,6 +234,11 @@ class Categorizer:
         if unknown and self.llm is not None:
             self._from_model(unknown)
         return out
+
+    def from_rules(self, text: str) -> str | None:
+        """Category for a free-text description using rules only (no model)."""
+        valid = {c.id for c in self.categories}
+        return self._from_rules(text, normalize_key(text), valid)[0]
 
     def _from_rules(self, title: str, key: str, valid: set[str]) -> tuple[str | None, list[str]]:
         exact = self.ledger.get_rule(key)
