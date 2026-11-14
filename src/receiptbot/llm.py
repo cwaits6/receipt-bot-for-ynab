@@ -185,7 +185,7 @@ class LlmClient:
         if usage is not None:
             # Token counts only, so the cost of each fallback call is visible in the log.
             log.info(
-                "Model call (%s, %s): %s input tokens, %s output tokens",
+                "Model call (%s, %s): usage in=%s out=%s",
                 purpose,
                 self.model,
                 getattr(usage, "input_tokens", "?"),

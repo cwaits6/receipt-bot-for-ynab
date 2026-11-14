@@ -264,14 +264,21 @@ class Ledger:
         """An earlier, not-reverted order with this order number, or with this
         content hash when there is no order number. Dry-run rows only count
         while the bot itself is in dry-run mode."""
-        column, value = (
-            ("order_number", order_number) if order_number else ("source_hash", source_hash)
-        )
-        dry = "" if include_dry_run else " AND dry_run=0"
-        row = self.db.execute(
-            f"SELECT * FROM orders WHERE {column}=? AND state!='reverted'{dry} ORDER BY id",
-            (value,),
-        ).fetchone()
+        # dry_run<=? is true for every row when the limit is 1, and only for
+        # real rows when it is 0. Both statements are fixed strings.
+        limit = 1 if include_dry_run else 0
+        if order_number:
+            row = self.db.execute(
+                "SELECT * FROM orders WHERE order_number=? AND state!='reverted' "
+                "AND dry_run<=? ORDER BY id",
+                (order_number, limit),
+            ).fetchone()
+        else:
+            row = self.db.execute(
+                "SELECT * FROM orders WHERE source_hash=? AND state!='reverted' "
+                "AND dry_run<=? ORDER BY id",
+                (source_hash, limit),
+            ).fetchone()
         return self._order(row) if row else None
 
     def order_by_reply(self, reply_timestamp: int) -> Order | None:
@@ -290,24 +297,28 @@ class Ledger:
         )
         return [self._order(row) for row in rows]
 
+    # One fixed statement per column that may change after an order is created.
+    _UPDATE_ORDER = {
+        "state": "UPDATE orders SET state=? WHERE id=?",
+        "ynab_transaction_id": "UPDATE orders SET ynab_transaction_id=? WHERE id=?",
+        "reply_timestamp": "UPDATE orders SET reply_timestamp=? WHERE id=?",
+        "grand_total": "UPDATE orders SET grand_total=? WHERE id=?",
+        "note": "UPDATE orders SET note=? WHERE id=?",
+        "dry_run": "UPDATE orders SET dry_run=? WHERE id=?",
+    }
+
     def update_order(self, order_id: int, **fields: Any) -> None:
-        allowed = {
-            "state",
-            "ynab_transaction_id",
-            "reply_timestamp",
-            "grand_total",
-            "note",
-            "dry_run",
-        }
-        unknown = set(fields) - allowed
+        unknown = set(fields) - set(self._UPDATE_ORDER)
         if unknown:
             raise ValueError(f"cannot update {sorted(unknown)}")
         if "grand_total" in fields:
             fields["grand_total"] = str(fields["grand_total"])
         if "dry_run" in fields:
             fields["dry_run"] = int(fields["dry_run"])
-        assignments = ", ".join(f"{name}=?" for name in fields)
-        self.db.execute(f"UPDATE orders SET {assignments} WHERE id=?", (*fields.values(), order_id))
+        with self.db:
+            self.db.execute("BEGIN")
+            for name, value in fields.items():
+                self.db.execute(self._UPDATE_ORDER[name], (value, order_id))
 
     def delete_order(self, order_id: int) -> None:
         self.db.execute("DELETE FROM orders WHERE id=?", (order_id,))
